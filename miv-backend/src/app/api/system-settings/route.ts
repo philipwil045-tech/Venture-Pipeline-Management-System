@@ -162,6 +162,9 @@ export async function PATCH(req: NextRequest) {
       if (a.email !== undefined) u.email = a.email.toLowerCase()
 
       if (Object.keys(u).length) {
+        // Privileged self-update: a user editing their OWN account. users.update is
+        // staff-only (matrix §2), so we intentionally do NOT pass overrideAccess:false —
+        // the target is always the caller's own id, so this is a scoped exception.
         await payload.update({ collection: 'users', id: user.id, data: u })
       }
     }
@@ -174,6 +177,8 @@ export async function PATCH(req: NextRequest) {
       await payload.update({
         collection: 'user-settings',
         id: doc.id,
+        overrideAccess: false,
+        user,
         data: {
           notifications: {
             emailAlerts: n.emailAlerts ?? doc.notifications?.emailAlerts ?? true,
@@ -192,16 +197,25 @@ export async function PATCH(req: NextRequest) {
       }
 
       const globalDoc = await getSingletonSystemSettings(payload)
+      // Enforce via the collection rule too (system-settings.update = adminOnly): the
+      // explicit admin check above stays for a clean 403, and overrideAccess:false is
+      // defence-in-depth so this can't be written by a non-admin if that check is ever removed.
       await payload.update({
         collection: 'system-settings',
         id: globalDoc.id,
+        overrideAccess: false,
+        user,
         data: parsed.data.global,
       })
     }
 
     return NextResponse.json({ success: true })
-  } catch (err) {
+  } catch (err: any) {
     console.error(err)
-    return NextResponse.json({ error: 'Update failed' }, { status: 500 })
+    const forbidden = err?.status === 403 || /forbidden/i.test(err?.message ?? '')
+    return NextResponse.json(
+      { error: forbidden ? 'Forbidden' : 'Update failed' },
+      { status: forbidden ? 403 : 500 },
+    )
   }
 }
